@@ -33,6 +33,9 @@ jobs:
         with:
           node-version: '24'
 
+      - name: Test the frontmatter parser
+        run: node --test scripts/lint-skills.test.ts
+
       - name: Lint SKILL.md files
         run: node scripts/lint-skills.ts
 
