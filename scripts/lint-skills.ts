@@ -1,3 +1,21 @@
+/**********************************************************************
+ * Copyright (C) 2026 Red Hat, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ ***********************************************************************/
+
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -54,20 +72,13 @@ export function parseSkill(text: string): Skill | null {
   return { top, nested, body: lines.slice(endIdx + 1).join('\n') };
 }
 
-/** Lints one skill directory. `skillPath` must already be absolute. */
-function lintSkill(skillPath: string, skillName: string): string[] {
+const label = (skillName: string) => (msg: string) => `skills/${skillName}/SKILL.md: ${msg}`;
+
+/** Every rule that can be judged from the file's text alone. Link resolution needs the disk, so it lives in lintSkill. */
+export function checkSkill(skill: Skill, skillName: string): string[] {
   const errors: string[] = [];
-  const err = (msg: string) => errors.push(`skills/${skillName}/SKILL.md: ${msg}`);
-
-  const skillMdPath = resolve(skillPath, 'SKILL.md');
-  if (!existsSync(skillMdPath)) {
-    return [`skills/${skillName}: missing SKILL.md`];
-  }
-
-  const skill = parseSkill(readFileSync(skillMdPath, 'utf-8'));
-  if (!skill) {
-    return [`skills/${skillName}/SKILL.md: missing YAML frontmatter`];
-  }
+  const prefix = label(skillName);
+  const err = (msg: string) => errors.push(prefix(msg));
 
   for (const key of Object.keys(skill.top)) {
     if (!SPEC_KEYS.includes(key)) err(`unknown frontmatter key "${key}"`);
@@ -95,11 +106,26 @@ function lintSkill(skillPath: string, skillName: string): string[] {
   const bodyLines = skill.body.trimStart().split('\n').length;
   if (bodyLines > MAX_BODY_LINES) err(`body is ${bodyLines} lines, max ${MAX_BODY_LINES}`);
 
+  return errors;
+}
+
+/** Lints one skill directory. `skillPath` must already be absolute. */
+function lintSkill(skillPath: string, skillName: string): string[] {
+  const prefix = label(skillName);
+
+  const skillMdPath = resolve(skillPath, 'SKILL.md');
+  if (!existsSync(skillMdPath)) return [`skills/${skillName}: missing SKILL.md`];
+
+  const skill = parseSkill(readFileSync(skillMdPath, 'utf-8'));
+  if (!skill) return [prefix('missing YAML frontmatter')];
+
+  const errors = checkSkill(skill, skillName);
+
   // shortcut: inline links only, no [text][ref] reference style; add if a skill starts using it.
   for (const [, target] of skill.body.matchAll(INLINE_LINK)) {
     if (/^(https?:\/\/|mailto:|#)/.test(target)) continue;
     const path = target.split(/[#?]/)[0];
-    if (path && !existsSync(resolve(skillPath, path))) err(`broken link: ${target}`);
+    if (path && !existsSync(resolve(skillPath, path))) errors.push(prefix(`broken link: ${target}`));
   }
 
   return errors;
