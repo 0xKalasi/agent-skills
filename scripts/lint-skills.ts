@@ -1,8 +1,21 @@
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+/** Frontmatter keys the skill spec allows. Anything else is a typo or an invention. */
+const SPEC_KEYS = ['name', 'description', 'license', 'compatibility', 'metadata', 'allowed-tools'];
+
+const MAX_NAME = 64;
+const MAX_DESCRIPTION = 1024;
+const MAX_BODY_LINES = 500;
+
+const KEBAB_CASE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
+const TOP_KEY = /^([a-z][a-z0-9-]*):\s*(.*)$/;
+const NESTED_KEY = /^\s+([a-z][a-z0-9-]*):\s*(.*)$/;
+const INLINE_LINK = /\]\(([^)\s]+)/g;
+
 /** A SKILL.md split into its frontmatter keys and the markdown that follows. */
-interface SkillDoc {
+export interface Skill {
   /** Frontmatter keys at column 0. */
   top: Record<string, string>;
   /** Indented frontmatter keys, grouped under the top-level key above them. */
@@ -12,145 +25,101 @@ interface SkillDoc {
 }
 
 // shortcut: shallow YAML — no anchors, block scalars or nested lists; upgrade to the yaml package if a skill needs them.
-function parseSkillDoc(text: string): SkillDoc | null {
+export function parseSkill(text: string): Skill | null {
   const lines = text.split('\n');
   if (lines[0] !== '---') return null;
 
-  let endIdx = -1;
-  for (let i = 1; i < lines.length; i++) {
-    if (lines[i] === '---') {
-      endIdx = i;
-      break;
-    }
-  }
+  const endIdx = lines.indexOf('---', 1);
   if (endIdx === -1) return null;
 
   const top: Record<string, string> = {};
   const nested: Record<string, Record<string, string>> = {};
   let currentKey = '';
 
-  for (let i = 1; i < endIdx; i++) {
-    const line = lines[i];
-    const topMatch = line.match(/^([a-z][a-z0-9-]*):\s*(.*)$/);
-    const nestedMatch = line.match(/^\s+([a-z][a-z0-9-]*):\s*(.*)$/);
+  const unquote = (value: string) => value.replace(/^(["'])(.*)\1$/, '$2');
+
+  for (const line of lines.slice(1, endIdx)) {
+    const topMatch = line.match(TOP_KEY);
+    const nestedMatch = line.match(NESTED_KEY);
 
     if (topMatch) {
       currentKey = topMatch[1];
-      let value = topMatch[2];
-      value = value.replace(/^["']|["']$/g, '');
-      top[currentKey] = value;
+      top[currentKey] = unquote(topMatch[2]);
     } else if (nestedMatch && currentKey) {
-      if (!nested[currentKey]) nested[currentKey] = {};
-      let value = nestedMatch[2];
-      value = value.replace(/^["']|["']$/g, '');
-      nested[currentKey][nestedMatch[1]] = value;
+      nested[currentKey] ??= {};
+      nested[currentKey][nestedMatch[1]] = unquote(nestedMatch[2]);
     }
   }
 
-  const body = lines.slice(endIdx + 1).join('\n');
-  return { top, nested, body };
+  return { top, nested, body: lines.slice(endIdx + 1).join('\n') };
 }
 
-function lintSkill(skillDir: string, skillName: string): string[] {
+/** Lints one skill directory. `skillPath` must already be absolute. */
+function lintSkill(skillPath: string, skillName: string): string[] {
   const errors: string[] = [];
-  const skillPath = resolve(skillDir);
+  const err = (msg: string) => errors.push(`skills/${skillName}/SKILL.md: ${msg}`);
+
   const skillMdPath = resolve(skillPath, 'SKILL.md');
-
   if (!existsSync(skillMdPath)) {
-    errors.push(`skills/${skillName}: missing SKILL.md`);
-    return errors;
+    return [`skills/${skillName}: missing SKILL.md`];
   }
 
-  const content = readFileSync(skillMdPath, 'utf-8');
-  const doc = parseSkillDoc(content);
-
-  if (!doc) {
-    errors.push(`skills/${skillName}/SKILL.md: missing YAML frontmatter`);
-    return errors;
+  const skill = parseSkill(readFileSync(skillMdPath, 'utf-8'));
+  if (!skill) {
+    return [`skills/${skillName}/SKILL.md: missing YAML frontmatter`];
   }
 
-  const validTopKeys = ['name', 'description', 'license', 'compatibility', 'metadata', 'allowed-tools'];
-  for (const key of Object.keys(doc.top)) {
-    if (!validTopKeys.includes(key)) {
-      errors.push(`skills/${skillName}/SKILL.md: unknown frontmatter key "${key}"`);
-    }
+  for (const key of Object.keys(skill.top)) {
+    if (!SPEC_KEYS.includes(key)) err(`unknown frontmatter key "${key}"`);
   }
 
-  const name = doc.top['name'];
+  const name = skill.top['name'];
   if (!name) {
-    errors.push(`skills/${skillName}/SKILL.md: missing name`);
+    err('missing name');
   } else {
-    if (name !== skillName) {
-      errors.push(`skills/${skillName}/SKILL.md: name "${name}" does not match directory "${skillName}"`);
-    }
-    if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(name)) {
-      errors.push(`skills/${skillName}/SKILL.md: name "${name}" is not lowercase-kebab-case`);
-    }
-    if (name.length > 64) {
-      errors.push(`skills/${skillName}/SKILL.md: name is ${name.length} chars, max 64`);
-    }
+    if (name !== skillName) err(`name "${name}" does not match directory "${skillName}"`);
+    if (!KEBAB_CASE.test(name)) err(`name "${name}" is not lowercase-kebab-case`);
+    if (name.length > MAX_NAME) err(`name is ${name.length} chars, max ${MAX_NAME}`);
   }
 
-  const description = doc.top['description'];
+  const description = skill.top['description'];
   if (!description || description.trim().length === 0) {
-    errors.push(`skills/${skillName}/SKILL.md: missing description`);
-  } else if (description.length > 1024) {
-    errors.push(`skills/${skillName}/SKILL.md: description is ${description.length} chars, max 1024`);
+    err('missing description');
+  } else if (description.length > MAX_DESCRIPTION) {
+    err(`description is ${description.length} chars, max ${MAX_DESCRIPTION}`);
   }
 
-  const version = doc.nested['metadata']?.['version'];
-  if (version && !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.test(version)) {
-    errors.push(`skills/${skillName}/SKILL.md: metadata.version "${version}" is not semver`);
-  }
+  const version = skill.nested['metadata']?.['version'];
+  if (version && !SEMVER.test(version)) err(`metadata.version "${version}" is not semver`);
 
-  const bodyLines = doc.body.trimStart().split('\n');
-  if (bodyLines.length > 500) {
-    errors.push(`skills/${skillName}/SKILL.md: body is ${bodyLines.length} lines, max 500`);
-  }
+  const bodyLines = skill.body.trimStart().split('\n').length;
+  if (bodyLines > MAX_BODY_LINES) err(`body is ${bodyLines} lines, max ${MAX_BODY_LINES}`);
 
   // shortcut: inline links only, no [text][ref] reference style; add if a skill starts using it.
-  const linkRegex = /\]\(([^)\s]+)/g;
-  let match;
-  while ((match = linkRegex.exec(doc.body)) !== null) {
-    let target = match[1];
-    if (target.startsWith('http://') || target.startsWith('https://') || target.startsWith('mailto:') || target.startsWith('#')) {
-      continue;
-    }
-    target = target.split('#')[0].split('?')[0];
-    if (!target) continue;
-    const resolved = resolve(skillPath, target);
-    if (!existsSync(resolved)) {
-      errors.push(`skills/${skillName}/SKILL.md: broken link: ${match[1]}`);
-    }
+  for (const [, target] of skill.body.matchAll(INLINE_LINK)) {
+    if (/^(https?:\/\/|mailto:|#)/.test(target)) continue;
+    const path = target.split(/[#?]/)[0];
+    if (path && !existsSync(resolve(skillPath, path))) err(`broken link: ${target}`);
   }
 
   return errors;
 }
 
-try {
+function main(): void {
   const skillsDir = resolve(process.cwd(), 'skills');
   if (!existsSync(skillsDir)) {
-    process.exit(0);
-  }
-
-  const entries = readdirSync(skillsDir, { withFileTypes: true });
-  const allErrors: string[] = [];
-
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      const skillPath = resolve(skillsDir, entry.name);
-      const errors = lintSkill(skillPath, entry.name);
-      allErrors.push(...errors);
-    }
-  }
-
-  if (allErrors.length > 0) {
-    for (const error of allErrors) {
-      console.error(error);
-    }
+    console.error('no skills/ directory');
     process.exitCode = 1;
+    return;
   }
-} catch (err) {
-  console.error('Linter error:', err);
-  process.exitCode = 1;
+
+  const errors = readdirSync(skillsDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .flatMap((entry) => lintSkill(resolve(skillsDir, entry.name), entry.name));
+
+  for (const error of errors) console.error(error);
+  if (errors.length > 0) process.exitCode = 1;
 }
+
+// Only lint when run directly, so the test can import parseSkill without side effects.
+if (process.argv[1] === import.meta.filename) main();
