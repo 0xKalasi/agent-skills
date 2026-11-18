@@ -192,13 +192,13 @@ importers:
   .:
     devDependencies:
       semver:
-        specifier: 7.8.6
+        specifier: ^7.8.6
         version: 7.8.6
       skills:
-        specifier: 1.9.0
+        specifier: ^1.9.0
         version: 1.9.0
       yaml:
-        specifier: 2.9.1
+        specifier: ^2.9.1
         version: 2.9.1
 
 packages:
