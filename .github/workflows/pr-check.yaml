@@ -21,14 +21,22 @@ on:
   pull_request:
 
 env:
-  DISABLE_TELEMETRY: 1      # CI runs must not count as installs on skills.sh
-  SKILLS_VERSION: '1.8.1'
+  DISABLE_TELEMETRY: 1  # CI runs must not count as installs on skills.sh
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   skills:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Installs pnpm (from packageManager in package.json) and node (from .nvmrc)
       - name: Install pnpm, node and dependencies
@@ -49,7 +57,9 @@ jobs:
           export HOME="$RUNNER_TEMP/fakehome"
           mkdir -p "$HOME"
 
-          npx -y "skills@$SKILLS_VERSION" add ./ --skill '*' \
+          # the CLI is a devDependency, so the version is pinned in the lockfile
+          # and dependabot can bump it
+          pnpm exec skills add ./ --skill '*' \
             -a claude-code -a codex -g -y --json > "$RUNNER_TEMP/install.json"
           cat "$RUNNER_TEMP/install.json"
 
