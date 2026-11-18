@@ -1,6 +1,5 @@
 ---
 name: conventional-commits
-description: Write commit messages in Conventional Commits format. Use when committing changes, writing a commit message, amending a commit, or when the user asks how to phrase one.
 license: Apache-2.0
 metadata:
   version: 0.1.0
@@ -43,7 +42,7 @@ Add a body when the subject cannot carry the "why". Wrap at 72 columns and
 separate it from the subject with a blank line. Reference issues in footers:
 `Refs: #123` or `Closes: #123`.
 
-See [examples.md](examples.md) for complete messages.
+See [examples.md](exmaples.md) for complete messages.
 
 ## Checklist
 
