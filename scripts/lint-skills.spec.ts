@@ -16,14 +16,18 @@
  * SPDX-License-Identifier: Apache-2.0
  ***********************************************************************/
 
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseSkill, checkSkill } from './lint-skills.ts';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parseSkill, checkSkill, lintSkill } from './lint-skills.ts';
 
 /**
  * One fixture exercising everything the parser has to cope with: all six spec
- * keys, a nested key, a quoted value, a colon inside a value, and a horizontal
- * rule in the body that must not be mistaken for the frontmatter terminator.
+ * keys, a nested mapping, an inline list, a quoted value, a colon inside a value,
+ * and a horizontal rule in the body that must not be mistaken for the
+ * frontmatter terminator.
  */
 const VALID = `---
 name: my-skill
@@ -58,15 +62,14 @@ test('a complete, valid SKILL.md parses fully and passes every check', () => {
   const skill = parseSkill(VALID);
   assert.ok(skill);
 
-  assert.deepEqual(skill.top, {
+  assert.deepEqual(skill.frontmatter, {
     name: 'my-skill',
     description: 'Does a thing. Use when: you need a thing.',
     license: 'Apache-2.0',
     compatibility: 'claude-code',
-    'allowed-tools': '[Read, Write]',
-    metadata: '',
+    'allowed-tools': ['Read', 'Write'],
+    metadata: { version: '1.2.3' },
   });
-  assert.deepEqual(skill.nested, { metadata: { version: '1.2.3' } });
   assert.ok(skill.body.includes('More body, after a horizontal rule.'));
 
   assert.deepEqual(checkSkill(skill, 'my-skill'), []);
@@ -114,4 +117,56 @@ test('no frontmatter at all', () => {
   assert.equal(parseSkill('# Just markdown\n'), null);
   assert.equal(parseSkill('---\nname: x\nnever closed\n'), null);
   assert.equal(parseSkill(''), null);
+});
+
+test('a folded block scalar description is read as one line', () => {
+  const folded = VALID.replace(
+    'description: "Does a thing. Use when: you need a thing."',
+    'description: >-\n  Does a thing.\n  Use when you need a thing.',
+  );
+  assert.equal(parseSkill(folded)?.frontmatter['description'], 'Does a thing. Use when you need a thing.');
+  assert.deepEqual(check(folded), []);
+});
+
+test('metadata.version read by YAML as a number is not semver', () => {
+  assert.deepEqual(check(VALID.replace('1.2.3', '1.0')), [
+    'skills/my-skill/SKILL.md: metadata.version "1" is not semver',
+  ]);
+});
+
+test('metadata.version is rejected even when semver can normalize it', () => {
+  assert.deepEqual(check(VALID.replace('1.2.3', '"v1.2.3"')), [
+    'skills/my-skill/SKILL.md: metadata.version "v1.2.3" is not semver',
+  ]);
+});
+
+test('malformed YAML throws so the linter can report it', () => {
+  assert.throws(() => parseSkill('---\nname: [unclosed\n---\n'));
+});
+
+// The two rules below need a real directory: lintSkill reads the file and resolves links against it.
+const TMP = mkdtempSync(join(tmpdir(), 'agent-skills-'));
+after(() => rmSync(TMP, { recursive: true, force: true }));
+
+/** Writes a throwaway skills/my-skill/ containing SKILL.md plus `siblings`, and lints it. */
+function lintOnDisk(text: string, siblings: string[] = []): string[] {
+  const dir = join(mkdtempSync(join(TMP, 'case-')), 'my-skill');
+  mkdirSync(dir);
+  writeFileSync(join(dir, 'SKILL.md'), text);
+  for (const sibling of siblings) writeFileSync(join(dir, sibling), '');
+  return lintSkill(dir, 'my-skill');
+}
+
+test('malformed YAML is reported as a lint error, not a crash', () => {
+  const errors = lintOnDisk('---\nname: [unclosed\n---\n\n# x\n');
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /^skills\/my-skill\/SKILL\.md: invalid YAML frontmatter: /);
+});
+
+test('links are resolved against the skill directory', () => {
+  const links = '\n[ref](reference.md) [url](https://example.dev) [anchor](#here)\n';
+  assert.deepEqual(lintOnDisk(VALID + links, ['reference.md']), []);
+  assert.deepEqual(lintOnDisk(VALID + '\n[gone](missing.md)\n'), [
+    'skills/my-skill/SKILL.md: broken link: missing.md',
+  ]);
 });

@@ -18,6 +18,8 @@
 
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { parse } from 'yaml';
+import { valid } from 'semver';
 
 /** Frontmatter keys the skill spec allows. Anything else is a typo or an invention. */
 const SPEC_KEYS = ['name', 'description', 'license', 'compatibility', 'metadata', 'allowed-tools'];
@@ -27,49 +29,24 @@ const MAX_DESCRIPTION = 1024;
 const MAX_BODY_LINES = 500;
 
 const KEBAB_CASE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
-const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
-const TOP_KEY = /^([a-z][a-z0-9-]*):\s*(.*)$/;
-const NESTED_KEY = /^\s+([a-z][a-z0-9-]*):\s*(.*)$/;
+const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
+
 const INLINE_LINK = /\]\(([^)\s]+)/g;
 
-/** A SKILL.md split into its frontmatter keys and the markdown that follows. */
 export interface Skill {
-  /** Frontmatter keys at column 0. */
-  top: Record<string, string>;
-  /** Indented frontmatter keys, grouped under the top-level key above them. */
-  nested: Record<string, Record<string, string>>;
-  /** Everything after the closing `---`. */
+  frontmatter: Record<string, unknown>;
   body: string;
 }
 
-// shortcut: shallow YAML — no anchors, block scalars or nested lists; upgrade to the yaml package if a skill needs them.
+/** Returns null when there is no usable frontmatter block. Throws on malformed YAML. */
 export function parseSkill(text: string): Skill | null {
-  const lines = text.split('\n');
-  if (lines[0] !== '---') return null;
+  const match = text.match(FRONTMATTER);
+  if (!match) return null;
 
-  const endIdx = lines.indexOf('---', 1);
-  if (endIdx === -1) return null;
+  const frontmatter = parse(match[1]);
+  if (typeof frontmatter !== 'object' || frontmatter === null || Array.isArray(frontmatter)) return null;
 
-  const top: Record<string, string> = {};
-  const nested: Record<string, Record<string, string>> = {};
-  let currentKey = '';
-
-  const unquote = (value: string) => value.replace(/^(["'])(.*)\1$/, '$2');
-
-  for (const line of lines.slice(1, endIdx)) {
-    const topMatch = line.match(TOP_KEY);
-    const nestedMatch = line.match(NESTED_KEY);
-
-    if (topMatch) {
-      currentKey = topMatch[1];
-      top[currentKey] = unquote(topMatch[2]);
-    } else if (nestedMatch && currentKey) {
-      nested[currentKey] ??= {};
-      nested[currentKey][nestedMatch[1]] = unquote(nestedMatch[2]);
-    }
-  }
-
-  return { top, nested, body: lines.slice(endIdx + 1).join('\n') };
+  return { frontmatter, body: text.slice(match[0].length) };
 }
 
 const label = (skillName: string) => (msg: string) => `skills/${skillName}/SKILL.md: ${msg}`;
@@ -80,12 +57,12 @@ export function checkSkill(skill: Skill, skillName: string): string[] {
   const prefix = label(skillName);
   const err = (msg: string) => errors.push(prefix(msg));
 
-  for (const key of Object.keys(skill.top)) {
+  for (const key of Object.keys(skill.frontmatter)) {
     if (!SPEC_KEYS.includes(key)) err(`unknown frontmatter key "${key}"`);
   }
 
-  const name = skill.top['name'];
-  if (!name) {
+  const name = skill.frontmatter['name'];
+  if (typeof name !== 'string' || name.length === 0) {
     err('missing name');
   } else {
     if (name !== skillName) err(`name "${name}" does not match directory "${skillName}"`);
@@ -93,15 +70,19 @@ export function checkSkill(skill: Skill, skillName: string): string[] {
     if (name.length > MAX_NAME) err(`name is ${name.length} chars, max ${MAX_NAME}`);
   }
 
-  const description = skill.top['description'];
-  if (!description || description.trim().length === 0) {
+  const description = skill.frontmatter['description'];
+  if (typeof description !== 'string' || description.trim().length === 0) {
     err('missing description');
   } else if (description.length > MAX_DESCRIPTION) {
     err(`description is ${description.length} chars, max ${MAX_DESCRIPTION}`);
   }
 
-  const version = skill.nested['metadata']?.['version'];
-  if (version && !SEMVER.test(version)) err(`metadata.version "${version}" is not semver`);
+  // `valid()` normalizes (" v1.2.3" -> "1.2.3"), so compare to the input to stay strict.
+  // The typeof guard matters because YAML reads `version: 1.0` as the number 1.
+  const version = (skill.frontmatter['metadata'] as Record<string, unknown> | undefined)?.['version'];
+  if (version !== undefined && (typeof version !== 'string' || valid(version) !== version)) {
+    err(`metadata.version "${version}" is not semver`);
+  }
 
   const bodyLines = skill.body.trimStart().split('\n').length;
   if (bodyLines > MAX_BODY_LINES) err(`body is ${bodyLines} lines, max ${MAX_BODY_LINES}`);
@@ -110,13 +91,18 @@ export function checkSkill(skill: Skill, skillName: string): string[] {
 }
 
 /** Lints one skill directory. `skillPath` must already be absolute. */
-function lintSkill(skillPath: string, skillName: string): string[] {
+export function lintSkill(skillPath: string, skillName: string): string[] {
   const prefix = label(skillName);
 
   const skillMdPath = resolve(skillPath, 'SKILL.md');
   if (!existsSync(skillMdPath)) return [`skills/${skillName}: missing SKILL.md`];
 
-  const skill = parseSkill(readFileSync(skillMdPath, 'utf-8'));
+  let skill: Skill | null;
+  try {
+    skill = parseSkill(readFileSync(skillMdPath, 'utf-8'));
+  } catch (error) {
+    return [prefix(`invalid YAML frontmatter: ${error instanceof Error ? error.message : error}`)];
+  }
   if (!skill) return [prefix('missing YAML frontmatter')];
 
   const errors = checkSkill(skill, skillName);
