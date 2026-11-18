@@ -31,7 +31,15 @@ const MAX_BODY_LINES = 500;
 const KEBAB_CASE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 
+/** `[text](target)` */
 const INLINE_LINK = /\]\(([^)\s]+)/g;
+/** `[id]: target`, the definition half of a `[text][id]` reference link. */
+const REFERENCE_LINK = /^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*<?([^>\s]+)/gm;
+/** A ``` or ~~~ block, up to a closing fence of the same kind. */
+const FENCED_CODE = /^[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^[ \t]*\1[ \t]*$/gm;
+const INLINE_CODE = /`[^`\n]*`/g;
+/** Targets that point somewhere other than a file in the skill directory. */
+const EXTERNAL = /^(https?:\/\/|mailto:|#)/;
 
 export interface Skill {
   frontmatter: Record<string, unknown>;
@@ -90,6 +98,23 @@ export function checkSkill(skill: Skill, skillName: string): string[] {
   return errors;
 }
 
+/**
+ * Link targets in the body that must resolve to a file next to SKILL.md.
+ *
+ * Skills document markdown, so link syntax inside code is an example and is skipped.
+ *
+ * shortcut: markdown by regex, not a parser — an unterminated code fence, an HTML
+ * `<a href>` or an `<./autolink>` is still read as prose. Reach for a markdown
+ * parser (e.g. `marked`) if a skill would need one eventually.
+ */
+function localLinks(body: string): string[] {
+  const prose = body.replace(FENCED_CODE, '').replace(INLINE_CODE, '');
+  const targets = [...prose.matchAll(INLINE_LINK), ...prose.matchAll(REFERENCE_LINK)].map(([, target]) => target);
+  // Deduplicated: the same target linked twice is one broken file, not two.
+  // returns only relative paths, not external URLs or fragment-only links.
+  return [...new Set(targets)].filter((target) => !EXTERNAL.test(target));
+}
+
 /** Lints one skill directory. `skillPath` must already be absolute. */
 export function lintSkill(skillPath: string, skillName: string): string[] {
   const prefix = label(skillName);
@@ -107,9 +132,7 @@ export function lintSkill(skillPath: string, skillName: string): string[] {
 
   const errors = checkSkill(skill, skillName);
 
-  // shortcut: inline links only, no [text][ref] reference style; add if a skill starts using it.
-  for (const [, target] of skill.body.matchAll(INLINE_LINK)) {
-    if (/^(https?:\/\/|mailto:|#)/.test(target)) continue;
+  for (const target of localLinks(skill.body)) {
     const path = target.split(/[#?]/)[0];
     if (path && !existsSync(resolve(skillPath, path))) errors.push(prefix(`broken link: ${target}`));
   }

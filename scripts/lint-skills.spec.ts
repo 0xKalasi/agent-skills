@@ -170,3 +170,42 @@ test('links are resolved against the skill directory', () => {
     'skills/my-skill/SKILL.md: broken link: missing.md',
   ]);
 });
+
+test('one missing file is reported once, however often it is linked', () => {
+  const repeated = `${VALID}\n[a](missing.md) and [b](missing.md).\n\n[c]: missing.md\n`;
+  assert.deepEqual(lintOnDisk(repeated), ['skills/my-skill/SKILL.md: broken link: missing.md']);
+});
+
+test('reference-style links are checked too', () => {
+  assert.deepEqual(lintOnDisk(`${VALID}\nSee the [guide][g].\n\n[g]: reference.md\n`, ['reference.md']), []);
+  assert.deepEqual(lintOnDisk(`${VALID}\nSee the [guide][g].\n\n[g]: missing.md\n`), [
+    'skills/my-skill/SKILL.md: broken link: missing.md',
+  ]);
+});
+
+test('link syntax inside code is an example, not a link', () => {
+  // A skill teaching markdown must not be told its own examples are broken.
+  const fenced = `${VALID}
+Write a link like this:
+
+\`\`\`md
+[guide](./does-not-exist.md)
+
+[ref]: ./also-not-there.md
+\`\`\`
+
+Or inline: \`[guide](./nope.md)\`.
+`;
+  assert.deepEqual(lintOnDisk(fenced), []);
+});
+
+test('a real link after a code block is still checked', () => {
+  const after = `${VALID}
+\`\`\`md
+[example](./ignored.md)
+\`\`\`
+
+[really gone](missing.md)
+`;
+  assert.deepEqual(lintOnDisk(after), ['skills/my-skill/SKILL.md: broken link: missing.md']);
+});
