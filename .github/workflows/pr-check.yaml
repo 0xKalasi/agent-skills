@@ -22,7 +22,6 @@ on:
 
 env:
   DISABLE_TELEMETRY: 1  # CI runs must not count as installs on skills.sh
-  SKILLS_VERSION: '1.8.1'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
@@ -58,7 +57,9 @@ jobs:
           export HOME="$RUNNER_TEMP/fakehome"
           mkdir -p "$HOME"
 
-          npx -y "skills@$SKILLS_VERSION" add ./ --skill '*' \
+          # the CLI is a devDependency, so the version is pinned in the lockfile
+          # and dependabot can bump it
+          pnpm exec skills add ./ --skill '*' \
             -a claude-code -a codex -g -y --json > "$RUNNER_TEMP/install.json"
           cat "$RUNNER_TEMP/install.json"
 
