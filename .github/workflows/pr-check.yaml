@@ -26,18 +26,22 @@ env:
 
 jobs:
   skills:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Installs pnpm (from packageManager in package.json) and node (from .nvmrc)
+      - name: Install pnpm, node and dependencies
+        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
         with:
-          node-version: '24'
+          cache: true
+          require-lockfile: true  # runs `pnpm install --frozen-lockfile`
 
       - name: Test the frontmatter parser
-        run: node --test scripts/lint-skills.spec.ts
+        run: pnpm test
 
       - name: Lint SKILL.md files
-        run: node scripts/lint-skills.ts
+        run: pnpm run lint:skills
 
       - name: Discovery and install smoke test
         run: |
